@@ -20,6 +20,15 @@ export function levelFor(xp: number): UserProfile['level'] {
   return labels[idx]
 }
 
+export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+  const ref = doc(db, 'users', uid)
+  const snap = await getDoc(ref)
+  if (snap.exists()) {
+    return snap.data() as UserProfile
+  }
+  return null
+}
+
 export async function award(uid: string, amount: number, badge?: string) {
   const ref = doc(db, 'users', uid)
   const snap = await getDoc(ref)

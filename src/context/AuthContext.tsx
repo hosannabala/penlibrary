@@ -27,7 +27,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   async function loginWithGoogle() {
-    await signInWithPopup(auth, googleProvider)
+    try {
+        await signInWithPopup(auth, googleProvider)
+    } catch (error: any) {
+        console.error("Login failed:", error)
+        alert("Login failed: " + error.message)
+    }
   }
   async function logout() {
     await signOut(auth)

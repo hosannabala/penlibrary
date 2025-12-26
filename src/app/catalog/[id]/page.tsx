@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { getBook } from '../../../lib/db'
+import { getBook, getWishlist, toggleWishlist } from '../../../lib/db'
 import type { Book } from '../../../lib/types'
 import { useCart } from '../../../context/CartContext'
 import { useAuth } from '../../../context/AuthContext'
@@ -14,6 +14,9 @@ export default function ProductPage({ params }: Props) {
   const { id } = params
   const [book, setBook] = useState<Book | null>(null)
   const [loading, setLoading] = useState(true)
+  const [quantity, setQuantity] = useState(1)
+  const [isWishlisted, setIsWishlisted] = useState(false)
+  const [wishlistLoading, setWishlistLoading] = useState(false)
   const { addToCart } = useCart()
   const { user, loginWithGoogle } = useAuth()
 
@@ -22,9 +25,31 @@ export default function ProductPage({ params }: Props) {
       const data = await getBook(id)
       setBook(data)
       setLoading(false)
+      
+      if (user) {
+        const wishlist = await getWishlist(user.uid)
+        setIsWishlisted(wishlist.includes(id))
+      }
     }
     fetch()
-  }, [id])
+  }, [id, user])
+
+  async function handleWishlist() {
+    if (!user) {
+        alert('Please sign in to save items.')
+        return
+    }
+    setWishlistLoading(true)
+    try {
+        const updated = await toggleWishlist(user.uid, id)
+        setIsWishlisted(updated.includes(id))
+    } catch (error) {
+        console.error(error)
+        alert('Failed to update wishlist')
+    } finally {
+        setWishlistLoading(false)
+    }
+  }
 
   function handleAddToCart() {
     if (!user) {
@@ -33,7 +58,7 @@ export default function ProductPage({ params }: Props) {
       return
     }
     if (book) {
-      addToCart(book)
+      addToCart(book, quantity)
       alert('Added to cart!')
     }
   }
@@ -81,14 +106,39 @@ export default function ProductPage({ params }: Props) {
           </div>
           
           <div className="flex flex-col sm:flex-row gap-4">
+            <div className="flex items-center border border-beige rounded-2xl px-4 py-2 w-fit">
+                <button 
+                    onClick={() => setQuantity(Math.max(1, quantity - 1))}
+                    className="w-8 h-8 flex items-center justify-center text-charcoal/60 hover:text-terracotta"
+                >
+                    -
+                </button>
+                <span className="w-8 text-center font-bold">{quantity}</span>
+                <button 
+                    onClick={() => setQuantity(Math.min(book.stock, quantity + 1))}
+                    className="w-8 h-8 flex items-center justify-center text-charcoal/60 hover:text-terracotta"
+                >
+                    +
+                </button>
+            </div>
+
             <button 
               onClick={handleAddToCart}
-              className="flex-1 px-8 py-4 rounded-2xl bg-terracotta text-white font-semibold shadow-soft hover:shadow-lg transition-all active:scale-95"
+              disabled={book.stock === 0}
+              className="flex-1 px-8 py-4 rounded-2xl bg-terracotta text-white font-semibold shadow-soft hover:shadow-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Add to Cart
+              {book.stock === 0 ? 'Out of Stock' : 'Add to Cart'}
             </button>
-            <button className="px-8 py-4 rounded-2xl border-2 border-beige text-charcoal font-semibold hover:border-terracotta hover:text-terracotta transition-colors">
-              Save to Wishlist
+            <button 
+                onClick={handleWishlist}
+                disabled={wishlistLoading}
+                className={`px-8 py-4 rounded-2xl border-2 font-semibold transition-colors ${
+                    isWishlisted 
+                    ? 'border-terracotta bg-terracotta/10 text-terracotta' 
+                    : 'border-beige text-charcoal hover:border-terracotta hover:text-terracotta'
+                }`}
+            >
+              {wishlistLoading ? '...' : (isWishlisted ? 'Saved' : 'Save to Wishlist')}
             </button>
           </div>
           

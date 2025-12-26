@@ -51,10 +51,14 @@ export type Order = {
   userId: string
   items: CartItem[]
   total: number
-  status: 'pending' | 'completed' | 'cancelled'
+  status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled'
+  paymentStatus?: 'paid' | 'unpaid'
+  paymentReference?: string
   createdAt: string
   customerName?: string
   customerEmail?: string
+  shippingAddress?: string
+  deliveryMethod?: 'delivery' | 'pickup'
 }
 
 export type Category = {

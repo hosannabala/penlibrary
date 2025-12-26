@@ -1,16 +1,22 @@
 'use client'
-import { useAuth } from '../../context/AuthContext'
 import { getUserOrders } from '../../lib/orders'
-import { createRequest, getUserRequests, type BookRequest } from '../../lib/requests'
-import { useState, useEffect } from 'react'
-import type { Order } from '../../lib/types'
+import { getUserRequests } from '../../lib/requests'
+import { getUserProfile } from '../../lib/gamification'
+import { getWishlist, getBooksByIds } from '../../lib/db'
+import type { Order, Book, UserProfile } from '../../lib/types'
+import { useAuth } from '../../context/AuthContext'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { useState, useEffect } from 'react'
+import { createRequest, type BookRequest } from '../../lib/requests'
 
 export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth()
   const router = useRouter()
   const [orders, setOrders] = useState<Order[]>([])
   const [requests, setRequests] = useState<BookRequest[]>([])
+  const [wishlist, setWishlist] = useState<Book[]>([])
+  const [profile, setProfile] = useState<UserProfile | null>(null)
   const [loading, setLoading] = useState(true)
   
   // Request Form State
@@ -24,10 +30,17 @@ export default function DashboardPage() {
     }
 
     if (user) {
-        Promise.all([getUserOrders(user.uid), getUserRequests(user.uid)])
-            .then(([ordersData, requestsData]) => {
+        Promise.all([
+            getUserOrders(user.uid), 
+            getUserRequests(user.uid),
+            getUserProfile(user.uid),
+            getWishlist(user.uid).then(ids => getBooksByIds(ids))
+        ])
+            .then(([ordersData, requestsData, profileData, wishlistData]) => {
                 setOrders(ordersData)
                 setRequests(requestsData)
+                setProfile(profileData)
+                setWishlist(wishlistData)
             })
             .catch(err => {
                 console.error("Failed to load dashboard data:", err)
@@ -99,8 +112,8 @@ export default function DashboardPage() {
           <div className="font-semibold mb-2">My Progress</div>
           {user ? (
             <div>
-                <div className="text-3xl font-bold text-terracotta mb-1">Level 1</div>
-                <div className="text-sm text-charcoal/60">XP: 0 • Streak: 0 days</div>
+                <div className="text-3xl font-bold text-terracotta mb-1">{profile?.level || 'Bronze'}</div>
+                <div className="text-sm text-charcoal/60">XP: {profile?.xp || 0} • Streak: {profile?.streak || 0} days</div>
             </div>
           ) : (
             <div>Please sign in to view your progress.</div>
@@ -129,7 +142,7 @@ export default function DashboardPage() {
                                         <div className="font-bold">Order #{order.id.slice(0, 8)}</div>
                                         <div className="text-sm text-charcoal/60">{new Date(order.createdAt).toLocaleDateString()}</div>
                                     </div>
-                                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${order.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${order.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
                                         {order.status.toUpperCase()}
                                     </div>
                                 </div>
@@ -172,6 +185,29 @@ export default function DashboardPage() {
                         </div>
                     ))}
                     {requests.length === 0 && <p className="text-charcoal/60">No requests yet.</p>}
+                </div>
+            </div>
+
+            <div>
+                <h3 className="text-xl font-semibold mb-4">My Wishlist</h3>
+                <div className="grid grid-cols-2 gap-4">
+                    {wishlist.map(book => (
+                        <div key={book.id} className="card p-4 flex gap-4">
+                            {book.coverUrl && (
+                                <div className="w-16 h-24 relative flex-shrink-0 bg-beige rounded overflow-hidden">
+                                    <img src={book.coverUrl} alt={book.title} className="object-cover w-full h-full" />
+                                </div>
+                            )}
+                            <div>
+                                <h4 className="font-bold text-sm line-clamp-2">{book.title}</h4>
+                                <p className="text-xs text-charcoal/60 mb-2">{book.author}</p>
+                                <Link href={`/catalog/${book.id}`} className="text-xs text-terracotta hover:underline">
+                                    View Details
+                                </Link>
+                            </div>
+                        </div>
+                    ))}
+                    {wishlist.length === 0 && <p className="text-charcoal/60 col-span-2">No items in wishlist.</p>}
                 </div>
             </div>
           </div>

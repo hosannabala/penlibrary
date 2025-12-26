@@ -4,7 +4,7 @@ import type { Book, CartItem } from '../lib/types'
 
 type CartContextType = {
   items: CartItem[]
-  addToCart: (book: Book) => void
+  addToCart: (book: Book, quantity?: number) => void
   removeFromCart: (bookId: string) => void
   clearCart: () => void
   total: number
@@ -34,13 +34,13 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     }
   }, [items, mounted])
 
-  function addToCart(book: Book) {
+  function addToCart(book: Book, quantity: number = 1) {
     setItems(prev => {
       const existing = prev.find(i => i.book.id === book.id)
       if (existing) {
-        return prev.map(i => i.book.id === book.id ? { ...i, quantity: i.quantity + 1 } : i)
+        return prev.map(i => i.book.id === book.id ? { ...i, quantity: i.quantity + quantity } : i)
       }
-      return [...prev, { book, quantity: 1 }]
+      return [...prev, { book, quantity }]
     })
   }
 

@@ -87,3 +87,36 @@ export async function hasUserRSVP(meetingId: string, uid: string): Promise<boole
     const snapshot = await getDocs(q)
     return snapshot.size > 0
 }
+
+// Wishlist
+export async function getWishlist(uid: string): Promise<string[]> {
+    const ref = doc(db, 'users', uid)
+    const snap = await getDoc(ref)
+    return snap.data()?.wishlist || []
+}
+
+export async function toggleWishlist(uid: string, bookId: string) {
+    const ref = doc(db, 'users', uid)
+    const snap = await getDoc(ref)
+    
+    if (!snap.exists()) return []
+
+    const current = snap.data()?.wishlist || []
+    let updated: string[]
+    
+    if (current.includes(bookId)) {
+        updated = current.filter((id: string) => id !== bookId)
+    } else {
+        updated = [...current, bookId]
+    }
+    
+    await updateDoc(ref, { wishlist: updated })
+    return updated
+}
+
+export async function getBooksByIds(ids: string[]): Promise<Book[]> {
+    if (!ids.length) return []
+    // Fetch in parallel
+    const books = await Promise.all(ids.map(id => getBook(id)))
+    return books.filter(b => b !== null) as Book[]
+}

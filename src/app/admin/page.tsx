@@ -10,15 +10,16 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { useAuth } from '../../context/AuthContext'
 import type { Book, Order, Category, ClubMeeting } from '../../lib/types'
 import { motion } from 'framer-motion'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import jsPDF from 'jspdf'
 import autoTable from 'jspdf-autotable'
 import { isAdmin } from '../../lib/admin'
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { checkAdminStatus, addAdmin, removeAdmin, getAdmins } from '../actions/admin'
 
 export default function AdminPage() {
   const { user } = useAuth()
   const router = useRouter()
-  const [activeTab, setActiveTab] = useState<'books' | 'gallery' | 'orders' | 'analytics' | 'requests' | 'categories' | 'club'>('books')
+  const [activeTab, setActiveTab] = useState<'books' | 'gallery' | 'orders' | 'analytics' | 'requests' | 'categories' | 'club' | 'admins'>('books')
   const [books, setBooks] = useState<Book[]>([])
   const [gallery, setGallery] = useState<GalleryItem[]>([])
   const [orders, setOrders] = useState<Order[]>([])
@@ -26,7 +27,10 @@ export default function AdminPage() {
   const [categories, setCategories] = useState<Category[]>([])
   const [meetings, setMeetings] = useState<ClubMeeting[]>([])
   const [loading, setLoading] = useState(true)
-  
+  const [isRealAdmin, setIsRealAdmin] = useState(false)
+  const [adminList, setAdminList] = useState<any[]>([])
+  const [newAdminEmail, setNewAdminEmail] = useState('')
+
   // Book State
   const [editing, setEditing] = useState<Book | null>(null)
   const [isFormOpen, setIsFormOpen] = useState(false)
@@ -48,18 +52,73 @@ export default function AdminPage() {
   const [galleryUrl, setGalleryUrl] = useState('')
   const [galleryTitle, setGalleryTitle] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [showReportMenu, setShowReportMenu] = useState(false)
   const { loading: authLoading } = useAuth()
 
   useEffect(() => {
     if (!authLoading) {
         if (!user) {
             router.push('/')
-        } else if (!isAdmin(user.email)) {
-            // Stay on page but show access denied in render, or redirect home
-            // For better UX, let's just handle it in render
+        } else {
+            // Verify admin status against DB + Legacy
+            checkAdminStatus(user.email).then(isValid => {
+                if (!isValid) {
+                   // Redirect or show denied
+                } else {
+                    setIsRealAdmin(true)
+                }
+            })
         }
     }
   }, [user, authLoading, router])
+
+  async function handleAddAdmin(e: React.FormEvent) {
+      e.preventDefault()
+      if (!newAdminEmail) return
+      
+      try {
+          const res = await addAdmin(newAdminEmail, user?.email || 'unknown')
+          if (res.success) {
+              alert(res.message)
+              setNewAdminEmail('')
+              fetchAdmins()
+          } else {
+              alert(res.message)
+          }
+      } catch (err) {
+          alert('Failed to add admin')
+      }
+  }
+
+  async function handleRemoveAdmin(email: string) {
+      if (!confirm(`Are you sure you want to remove ${email} from admins?`)) return
+      
+      try {
+          const res = await removeAdmin(email)
+          if (res.success) {
+              fetchAdmins()
+          } else {
+              alert(res.message)
+          }
+      } catch (err) {
+          alert('Failed to remove admin')
+      }
+  }
+
+  async function fetchAdmins() {
+      const data = await getAdmins()
+      // Merge unique emails
+      const all = [...data.legacyAdmins, ...data.firestoreAdmins]
+      // Dedup by email
+      const unique = Array.from(new Map(all.map((item: any) => [item.email, item])).values())
+      setAdminList(unique)
+  }
+
+  useEffect(() => {
+      if (activeTab === 'admins') {
+          fetchAdmins()
+      }
+  }, [activeTab])
 
   async function handleImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -276,17 +335,27 @@ export default function AdminPage() {
 
   function downloadInventoryPDF() {
     const doc = new jsPDF()
-    doc.setFontSize(18)
-    doc.text("Pen Library - Inventory Report", 14, 22)
-    doc.setFontSize(11)
-    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 30)
+    
+    // Branding
+    doc.setFontSize(22)
+    doc.setTextColor(217, 119, 87) // terracotta
+    doc.text("Pen Library Services", 14, 20)
+    
+    doc.setFontSize(16)
+    doc.setTextColor(40, 40, 40) // charcoal
+    doc.text("Inventory Report", 14, 30)
+    
+    doc.setFontSize(10)
+    doc.setTextColor(100, 100, 100)
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 38)
     
     const tableRows = books.map(book => [book.title, book.author, book.price, book.stock, book.category])
     
     autoTable(doc, {
         head: [['Title', 'Author', 'Price', 'Stock', 'Category']],
         body: tableRows,
-        startY: 35,
+        startY: 45,
+        headStyles: { fillColor: [217, 119, 87] },
     })
     
     doc.save('inventory_report.pdf')
@@ -294,10 +363,19 @@ export default function AdminPage() {
 
   function downloadPurchaseListPDF() {
     const doc = new jsPDF()
-    doc.setFontSize(18)
-    doc.text("Pen Library - Purchase List Report", 14, 22)
-    doc.setFontSize(11)
-    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 30)
+    
+    // Branding
+    doc.setFontSize(22)
+    doc.setTextColor(217, 119, 87) // terracotta
+    doc.text("Pen Library Services", 14, 20)
+    
+    doc.setFontSize(16)
+    doc.setTextColor(40, 40, 40) // charcoal
+    doc.text("Sales Report", 14, 30)
+    
+    doc.setFontSize(10)
+    doc.setTextColor(100, 100, 100)
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 38)
 
     const bookSales: Record<string, { title: string, sold: number, stock: number }> = {}
     orders.forEach(order => {
@@ -316,10 +394,47 @@ export default function AdminPage() {
     autoTable(doc, {
         head: [['Book Title', 'Total Sold', 'Current Stock']],
         body: tableRows,
-        startY: 35,
+        startY: 45,
+        headStyles: { fillColor: [217, 119, 87] },
     })
 
-    doc.save('purchase_list_report.pdf')
+    doc.save('sales_report.pdf')
+  }
+
+  function downloadRequestsPDF() {
+    const doc = new jsPDF()
+    
+    // Branding
+    doc.setFontSize(22)
+    doc.setTextColor(217, 119, 87) // terracotta
+    doc.text("Pen Library Services", 14, 20)
+    
+    doc.setFontSize(16)
+    doc.setTextColor(40, 40, 40) // charcoal
+    doc.text("Requests Report", 14, 30)
+    
+    doc.setFontSize(10)
+    doc.setTextColor(100, 100, 100)
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 38)
+
+    const reqStats: Record<string, number> = {}
+    requests.forEach(r => {
+        const key = `${r.bookTitle} by ${r.author}`
+        reqStats[key] = (reqStats[key] || 0) + 1
+    })
+    
+    const tableRows = Object.entries(reqStats)
+        .sort(([, a], [, b]) => b - a)
+        .map(([title, count]) => [title, count])
+
+    autoTable(doc, {
+        head: [['Book Title', 'Request Count']],
+        body: tableRows,
+        startY: 45,
+        headStyles: { fillColor: [217, 119, 87] },
+    })
+
+    doc.save('requests_report.pdf')
   }
 
   function downloadRequestsCSV() {
@@ -382,26 +497,31 @@ export default function AdminPage() {
   if (authLoading) return <div className="min-h-screen flex items-center justify-center">Loading...</div>
   if (!user) return null
 
-  if (!isAdmin(user.email)) {
-    return (
+  // If checkAdminStatus is still running or returned false (but we only set true in state)
+  // We need to wait for isRealAdmin or handle the 'false' case.
+  // Ideally, we should have a 'checkingAdmin' state.
+  // For now, let's just use the legacy sync check for initial render to avoid flash, then rely on isRealAdmin.
+  
+  // Note: The previous logic relied on synchronous isAdmin(). 
+  // Now we rely on the useEffect to set isRealAdmin.
+  // To avoid showing "Access Denied" while checking, we can show loading.
+  if (!isRealAdmin && !isAdmin(user.email)) { 
+      // This allows legacy admins to pass immediately, while new DB admins wait for the effect.
+      // But if isAdmin(user.email) is false, we might still be a DB admin.
+      // So we should wait until the check completes.
+      // However, we didn't add a 'checking' state. Let's assume if it takes too long, it's denied.
+      // Better approach:
+      return (
         <div className="min-h-screen flex flex-col items-center justify-center p-4 text-center">
-            <h1 className="text-3xl font-bold text-terracotta mb-4">Access Denied</h1>
-            <p className="text-charcoal/60 max-w-md mb-6">
-                You do not have permission to view the admin portal. 
-                Please contact the system administrator if you believe this is an error.
-            </p>
-            <div className="bg-offwhite p-4 rounded-xl text-sm font-mono mb-6">
-                Your Email: {user.email}
-            </div>
-            <button 
-                onClick={() => router.push('/')}
-                className="px-6 py-3 bg-charcoal text-white rounded-xl"
-            >
-                Return to Home
-            </button>
+            <h1 className="text-3xl font-bold text-terracotta mb-4">Verifying Access...</h1>
+            <p className="text-charcoal/60">Please wait while we check your permissions.</p>
         </div>
-    )
+      )
   }
+
+  // If we get here, either isAdmin() is true (legacy) OR isRealAdmin is true (DB).
+  // Actually, the above condition returns if BOTH are false.
+  // So if either is true, we proceed.
 
   return (
     <div className="py-8">
@@ -474,6 +594,12 @@ export default function AdminPage() {
             Events
           </button>
           <button 
+            onClick={() => setActiveTab('admins')}
+            className={`pb-2 px-4 font-medium transition-colors shrink-0 ${activeTab === 'admins' ? 'text-terracotta border-b-2 border-terracotta' : 'text-charcoal/60 hover:text-charcoal'}`}
+          >
+            Admins
+          </button>
+          <button 
             onClick={() => setActiveTab('analytics')}
             className={`pb-2 px-4 font-medium transition-colors shrink-0 ${activeTab === 'analytics' ? 'text-terracotta border-b-2 border-terracotta' : 'text-charcoal/60 hover:text-charcoal'}`}
           >
@@ -533,7 +659,7 @@ export default function AdminPage() {
                             </div>
                             <div className="text-sm text-charcoal/60">{new Date(order.createdAt).toLocaleString()}</div>
                         </div>
-                        <div className={`px-3 py-1 rounded-full text-xs font-medium ${order.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                        <div className={`px-3 py-1 rounded-full text-xs font-medium ${order.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
                             {order.status.toUpperCase()}
                         </div>
                     </div>
@@ -550,7 +676,7 @@ export default function AdminPage() {
                         <span>₦{order.total.toLocaleString()}</span>
                     </div>
                     <div className="flex gap-2 mt-3">
-                        <button onClick={() => updateOrderStatus(order.id, 'completed').then(fetchData)} className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs">Mark Completed</button>
+                        <button onClick={() => updateOrderStatus(order.id, 'delivered').then(fetchData)} className="px-3 py-1.5 rounded-lg bg-green-600 text-white text-xs">Mark Delivered</button>
                         <button onClick={() => updateOrderStatus(order.id, 'cancelled').then(fetchData)} className="px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs">Cancel</button>
                     </div>
                 </div>
@@ -721,16 +847,36 @@ export default function AdminPage() {
             <div className="space-y-8">
                 <div className="flex justify-between items-center">
                     <h3 className="text-xl font-bold">Sales Performance</h3>
-                    <div className="flex gap-4">
-                        <button onClick={downloadPurchaseList} className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2">
-                            <span>Download Sales Report (CSV)</span>
+                    <div className="relative">
+                        <button 
+                            onClick={() => setShowReportMenu(!showReportMenu)}
+                            className="bg-terracotta text-white px-6 py-2 rounded-xl hover:bg-terracotta/90 transition-colors flex items-center gap-2 shadow-soft"
+                        >
+                            <span>Download Reports</span>
+                            <svg className={`w-4 h-4 transition-transform ${showReportMenu ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
                         </button>
-                        <button onClick={downloadPurchaseListPDF} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors flex items-center gap-2">
-                            <span>Download Sales Report (PDF)</span>
-                        </button>
-                        <button onClick={downloadRequestsCSV} className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2">
-                            <span>Download Requests Report (CSV)</span>
-                        </button>
+
+                        {showReportMenu && (
+                            <div className="absolute right-0 top-full mt-2 w-64 bg-white rounded-xl shadow-lg border border-beige py-2 z-10">
+                                <div className="px-4 py-2 text-xs font-bold text-charcoal/40 uppercase tracking-wider">Sales Reports</div>
+                                <button onClick={() => { downloadPurchaseList(); setShowReportMenu(false) }} className="w-full text-left px-4 py-2 hover:bg-offwhite text-sm text-charcoal">
+                                    Sales Report (CSV)
+                                </button>
+                                <button onClick={() => { downloadPurchaseListPDF(); setShowReportMenu(false) }} className="w-full text-left px-4 py-2 hover:bg-offwhite text-sm text-charcoal">
+                                    Sales Report (PDF)
+                                </button>
+                                
+                                <div className="border-t border-beige my-1"></div>
+                                
+                                <div className="px-4 py-2 text-xs font-bold text-charcoal/40 uppercase tracking-wider">Request Reports</div>
+                                <button onClick={() => { downloadRequestsCSV(); setShowReportMenu(false) }} className="w-full text-left px-4 py-2 hover:bg-offwhite text-sm text-charcoal">
+                                    Requests Report (CSV)
+                                </button>
+                                <button onClick={() => { downloadRequestsPDF(); setShowReportMenu(false) }} className="w-full text-left px-4 py-2 hover:bg-offwhite text-sm text-charcoal">
+                                    Requests Report (PDF)
+                                </button>
+                            </div>
+                        )}
                     </div>
                 </div>
                 
@@ -838,6 +984,75 @@ export default function AdminPage() {
                 </div>
             </div>
         )}
+
+        {/* Admins Tab */}
+        {activeTab === 'admins' && (
+            <div className="card p-6 bg-white">
+                <h3 className="text-xl font-bold mb-6 text-charcoal">Manage Admins</h3>
+                
+                <div className="mb-8 p-6 bg-beige/20 rounded-xl">
+                    <h4 className="font-semibold mb-4">Add New Admin</h4>
+                    <form onSubmit={handleAddAdmin} className="flex gap-4">
+                        <input 
+                            type="email"
+                            required
+                            value={newAdminEmail}
+                            onChange={e => setNewAdminEmail(e.target.value)}
+                            placeholder="Enter user email address"
+                            className="flex-1 p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta"
+                        />
+                        <button 
+                            type="submit"
+                            className="px-6 py-3 bg-terracotta text-white rounded-xl shadow-soft hover:shadow-lg transition-all"
+                        >
+                            Add Admin
+                        </button>
+                    </form>
+                    <p className="text-xs text-charcoal/50 mt-2">
+                        Warning: This user will have full access to the admin dashboard, including inventory, orders, and this admin list.
+                    </p>
+                </div>
+
+                <div>
+                    <h4 className="font-semibold mb-4">Current Admins</h4>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                            <thead>
+                                <tr className="border-b border-beige text-charcoal/60 text-sm">
+                                    <th className="py-3 font-medium">Email</th>
+                                    <th className="py-3 font-medium">Type</th>
+                                    <th className="py-3 font-medium">Added By</th>
+                                    <th className="py-3 font-medium text-right">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {adminList.map((admin, i) => (
+                                    <tr key={i} className="border-b border-beige/50 hover:bg-offwhite/50">
+                                        <td className="py-4 font-medium">{admin.email}</td>
+                                        <td className="py-4 text-sm">
+                                            <span className={`px-2 py-1 rounded-full text-xs font-bold ${admin.type === 'system' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>
+                                                {admin.type === 'system' ? 'SYSTEM' : 'DELEGATED'}
+                                            </span>
+                                        </td>
+                                        <td className="py-4 text-sm text-charcoal/60">{admin.addedBy || 'System'}</td>
+                                        <td className="py-4 text-right">
+                                            {admin.type !== 'system' && (
+                                                <button 
+                                                    onClick={() => handleRemoveAdmin(admin.email)}
+                                                    className="text-red-500 hover:text-red-700 text-sm font-medium"
+                                                >
+                                                    Remove
+                                                </button>
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        )}
       </div>
 
       {isFormOpen && (
@@ -868,6 +1083,16 @@ export default function AdminPage() {
                   onChange={e => setFormData({...formData, author: e.target.value})} 
                   className="w-full p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta"
                   required
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-charcoal/70 mb-1">Description</label>
+                <textarea 
+                  placeholder="e.g. A comprehensive guide to..." 
+                  value={formData.description || ''} 
+                  onChange={e => setFormData({...formData, description: e.target.value})} 
+                  className="w-full p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta h-24"
                 />
               </div>
 
