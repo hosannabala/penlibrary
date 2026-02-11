@@ -1,6 +1,7 @@
 import './globals.css'
 import type { Metadata } from 'next'
 import { Poppins } from 'next/font/google'
+import { Analytics } from '@vercel/analytics/next'
 import NavBar from '../components/NavBar'
 import Footer from '../components/Footer'
 import { AuthProvider } from '../context/AuthContext'
@@ -31,6 +32,7 @@ export default function RootLayout({
             <NavBar />
             <main className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 flex-grow w-full">{children}</main>
             <Footer />
+            <Analytics />
           </CartProvider>
         </AuthProvider>
       </body>
