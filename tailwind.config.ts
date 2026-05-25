@@ -8,10 +8,11 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        beige: '#F5EBDD',
-        terracotta: '#E07A5F',
+        beige: '#EBEBEB',
+        terracotta: '#F07A22',
         charcoal: '#2E2E2E',
-        offwhite: '#FFFDF8',
+        navy: '#1E3777',
+        offwhite: '#FAFAFA',
         sage: '#E9F5DB'
       },
       boxShadow: {

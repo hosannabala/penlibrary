@@ -1,14 +1,40 @@
 'use client'
 import { getUserOrders } from '../../lib/orders'
 import { getUserRequests } from '../../lib/requests'
-import { getUserProfile } from '../../lib/gamification'
 import { getWishlist, getBooksByIds } from '../../lib/db'
-import type { Order, Book, UserProfile } from '../../lib/types'
+import type { Order, Book } from '../../lib/types'
+import type { BookRequest } from '../../lib/requests'
 import { useAuth } from '../../context/AuthContext'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import Image from 'next/image'
 import { useState, useEffect } from 'react'
-import { createRequest, type BookRequest } from '../../lib/requests'
+import { createRequest } from '../../lib/requests'
+
+const STATUS_STYLES: Record<string, string> = {
+  delivered: 'bg-green-50 text-green-700 border-green-200',
+  paid: 'bg-blue-50 text-blue-700 border-blue-200',
+  shipped: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+  cancelled: 'bg-red-50 text-red-600 border-red-200',
+  pending: 'bg-amber-50 text-amber-700 border-amber-200',
+  fulfilled: 'bg-green-50 text-green-700 border-green-200',
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return (
+    <span className={`inline-block px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide border ${STATUS_STYLES[status] ?? 'bg-gray-50 text-gray-600 border-gray-200'}`}>
+      {status}
+    </span>
+  )
+}
+
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="section-divider-heading">
+      <span className="text-base font-bold tracking-[0.12em] uppercase text-charcoal">{children}</span>
+    </div>
+  )
+}
 
 export default function DashboardPage() {
   const { user, loading: authLoading } = useAuth()
@@ -16,233 +42,255 @@ export default function DashboardPage() {
   const [orders, setOrders] = useState<Order[]>([])
   const [requests, setRequests] = useState<BookRequest[]>([])
   const [wishlist, setWishlist] = useState<Book[]>([])
-  const [profile, setProfile] = useState<UserProfile | null>(null)
   const [loading, setLoading] = useState(true)
-  
-  // Request Form State
+
   const [reqTitle, setReqTitle] = useState('')
   const [reqAuthor, setReqAuthor] = useState('')
+  const [reqStatus, setReqStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
+  const [reqError, setReqError] = useState('')
 
   useEffect(() => {
     if (!authLoading && !user) {
       router.push('/')
       return
     }
+    if (!user) return
 
-    if (user) {
-        Promise.all([
-            getUserOrders(user.uid), 
-            getUserRequests(user.uid),
-            getUserProfile(user.uid),
-            getWishlist(user.uid).then(ids => getBooksByIds(ids))
-        ])
-            .then(([ordersData, requestsData, profileData, wishlistData]) => {
-                setOrders(ordersData)
-                setRequests(requestsData)
-                setProfile(profileData)
-                setWishlist(wishlistData)
-            })
-            .catch(err => {
-                console.error("Failed to load dashboard data:", err)
-                // Optionally set an error state here
-            })
-            .finally(() => {
-                setLoading(false)
-            })
-    }
+    Promise.allSettled([
+      getUserOrders(user.uid),
+      getUserRequests(user.uid),
+      getWishlist(user.uid).then(ids => getBooksByIds(ids)),
+    ]).then(([ordersRes, requestsRes, wishlistRes]) => {
+      if (ordersRes.status === 'fulfilled') setOrders(ordersRes.value)
+      if (requestsRes.status === 'fulfilled') setRequests(requestsRes.value)
+      if (wishlistRes.status === 'fulfilled') setWishlist(wishlistRes.value)
+    }).finally(() => setLoading(false))
   }, [user, authLoading, router])
 
-  if (authLoading || !user) return <div className="min-h-screen flex items-center justify-center">Loading...</div>
+  if (authLoading || !user) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <svg className="animate-spin h-6 w-6" style={{ color: '#F07A22' }} viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+          <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" className="opacity-75" />
+        </svg>
+      </div>
+    )
+  }
 
   async function handleRequestSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!user) {
-        alert('Please sign in to request a book.')
-        return
-    }
-    if (!reqTitle || !reqAuthor) {
-        alert('Please fill in both title and author.')
-        return
-    }
-
+    if (!user) return
+    setReqStatus('loading')
+    setReqError('')
     try {
-        await createRequest({
-            userId: user.uid,
-            userName: user.displayName || 'Unknown',
-            bookTitle: reqTitle,
-            author: reqAuthor,
-            status: 'pending',
-            createdAt: new Date().toISOString()
-        })
-        setReqTitle('')
-        setReqAuthor('')
-        alert('Book requested successfully!')
-        // Refresh requests
-        const updated = await getUserRequests(user.uid)
-        setRequests(updated)
-    } catch (error) {
-        console.error('Request submission error:', error)
-        alert('Failed to submit request. Please try again later.')
+      await createRequest({
+        userId: user.uid,
+        userName: user.displayName || 'Unknown',
+        bookTitle: reqTitle,
+        author: reqAuthor,
+        status: 'pending',
+        createdAt: new Date().toISOString(),
+      })
+      setReqTitle('')
+      setReqAuthor('')
+      setReqStatus('success')
+      const updated = await getUserRequests(user.uid)
+      setRequests(updated)
+      setTimeout(() => setReqStatus('idle'), 4000)
+    } catch {
+      setReqStatus('error')
+      setReqError('Failed to submit request. Please try again.')
     }
   }
 
   return (
-    <div className="py-8">
-      <div className="mb-8">
-        <h2 className="text-2xl font-semibold mb-6">Dashboard</h2>
-        
-        {user && (
-            <div className="card p-6 flex items-center gap-6 bg-white shadow-soft">
-                <div className="w-20 h-20 rounded-full bg-terracotta/10 flex items-center justify-center text-3xl font-bold text-terracotta uppercase">
-                    {user.displayName?.[0] || user.email?.[0] || 'U'}
-                </div>
-                <div>
-                    <h3 className="text-2xl font-bold">{user.displayName || 'Welcome, User'}</h3>
-                    <p className="text-charcoal/60">{user.email}</p>
-                    <p className="text-xs text-charcoal/40 mt-1">
-                        Member since {user.metadata.creationTime ? new Date(user.metadata.creationTime).toLocaleDateString() : 'Recently'}
-                    </p>
-                </div>
-            </div>
+    <div className="py-8 max-w-6xl mx-auto">
+
+      {/* Profile header */}
+      <div className="flex items-center gap-5 mb-10 pb-8 border-b border-[#EBEBEB]">
+        {user.photoURL ? (
+          <Image
+            src={user.photoURL}
+            alt={user.displayName ?? 'Avatar'}
+            width={64}
+            height={64}
+            className="rounded-full border-2 border-[#EBEBEB]"
+          />
+        ) : (
+          <div
+            className="w-16 h-16 flex items-center justify-center text-2xl font-bold text-white uppercase"
+            style={{ backgroundColor: '#1E3777' }}
+          >
+            {user.displayName?.[0] || user.email?.[0] || 'U'}
+          </div>
         )}
+        <div>
+          <h1 className="text-2xl font-bold text-charcoal">{user.displayName || 'My Account'}</h1>
+          <p className="text-sm text-charcoal/50 mt-0.5">{user.email}</p>
+        </div>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-6 mb-8">
-        <div className="card p-4">
-          <div className="font-semibold mb-2">My Progress</div>
-          {user ? (
-            <div>
-                <div className="text-3xl font-bold text-terracotta mb-1">{profile?.level || 'Bronze'}</div>
-                <div className="text-sm text-charcoal/60">XP: {profile?.xp || 0} • Streak: {profile?.streak || 0} days</div>
+      {/* Stats row */}
+      <div className="grid grid-cols-3 gap-4 mb-10">
+        {[
+          { label: 'Total Orders', value: orders.length },
+          { label: 'Requests', value: requests.length },
+          { label: 'Wishlist', value: wishlist.length },
+        ].map(stat => (
+          <div key={stat.label} className="border border-[#EBEBEB] p-3 sm:p-5">
+            <p className="text-2xl font-bold text-charcoal">{stat.value}</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-charcoal/40 mt-1">{stat.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid lg:grid-cols-3 gap-10">
+        <div className="lg:col-span-2 space-y-2">
+
+          {/* Order History */}
+          <SectionHeading>Order History</SectionHeading>
+          {loading ? (
+            <p className="text-sm text-charcoal/50 py-4">Loading orders...</p>
+          ) : orders.length === 0 ? (
+            <div className="border border-[#EBEBEB] p-8 text-center">
+              <p className="text-charcoal/50 text-sm mb-4">No orders yet.</p>
+              <Link
+                href="/catalog"
+                className="inline-block px-6 py-2.5 text-white text-[11px] font-bold uppercase tracking-widest transition-opacity hover:opacity-90"
+                style={{ backgroundColor: '#F07A22' }}
+              >
+                Browse Books
+              </Link>
             </div>
           ) : (
-            <div>Please sign in to view your progress.</div>
+            <div className="space-y-3">
+              {orders.map(order => (
+                <div key={order.id} className="border border-[#EBEBEB] p-5">
+                  <div className="flex justify-between items-start mb-3">
+                    <div>
+                      <p className="text-sm font-bold text-charcoal">Order #{order.id.slice(0, 8).toUpperCase()}</p>
+                      <p className="text-xs text-charcoal/40 mt-0.5">
+                        {order.createdAt ? new Date(order.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
+                      </p>
+                    </div>
+                    <StatusBadge status={order.status} />
+                  </div>
+                  <div className="space-y-1.5 mb-3">
+                    {order.items.map((item, i) => (
+                      <div key={i} className="flex justify-between text-sm">
+                        <span className="text-charcoal/70 line-clamp-1">{item.book.title} <span className="text-charcoal/40">×{item.quantity}</span></span>
+                        <span className="text-charcoal font-medium shrink-0 ml-4">₦{(item.book.price * item.quantity).toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="border-t border-[#EBEBEB] pt-3 flex justify-between items-center">
+                    <span className="text-xs text-charcoal/40 uppercase tracking-wide font-semibold">Total</span>
+                    <span className="font-bold text-charcoal">₦{order.total.toLocaleString()}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Book Requests */}
+          <SectionHeading>My Book Requests</SectionHeading>
+          {requests.length === 0 ? (
+            <p className="text-sm text-charcoal/50 py-2">No requests yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {requests.map(req => (
+                <div key={req.id} className="border border-[#EBEBEB] p-4 flex justify-between items-center">
+                  <div>
+                    <p className="text-sm font-semibold text-charcoal">{req.bookTitle}</p>
+                    <p className="text-xs text-charcoal/50">by {req.author}</p>
+                    <p className="text-xs text-charcoal/30 mt-0.5">{new Date(req.createdAt).toLocaleDateString()}</p>
+                  </div>
+                  <StatusBadge status={req.status} />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Wishlist */}
+          <SectionHeading>My Wishlist</SectionHeading>
+          {wishlist.length === 0 ? (
+            <p className="text-sm text-charcoal/50 py-2">No items saved.</p>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              {wishlist.map(book => (
+                <Link
+                  key={book.id}
+                  href={`/catalog/${book.id}` as any}
+                  className="group border border-[#EBEBEB] hover:border-[#F07A22]/40 transition-colors p-3 flex gap-3"
+                >
+                  <div className="relative w-12 h-16 shrink-0 bg-[#F0EDE8] overflow-hidden">
+                    {book.coverUrl ? (
+                      <Image src={book.coverUrl} alt={book.title} fill className="object-cover" sizes="48px" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-charcoal/20 font-bold text-lg">
+                        {book.title[0]}
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-charcoal line-clamp-2 group-hover:text-[#F07A22] transition-colors leading-snug">{book.title}</p>
+                    <p className="text-[11px] text-charcoal/40 mt-0.5 truncate">{book.author}</p>
+                    <p className="text-xs font-bold mt-1.5" style={{ color: '#F07A22' }}>₦{book.price.toLocaleString()}</p>
+                  </div>
+                </Link>
+              ))}
+            </div>
           )}
         </div>
-        <div className="card p-4">
-          <div className="font-semibold mb-2">Total Orders</div>
-          <div className="text-3xl font-bold text-charcoal">{orders.length}</div>
-        </div>
-        <div className="card p-4">
-          <div className="font-semibold mb-2">My Requests</div>
-          <div className="text-3xl font-bold text-charcoal">{requests.length}</div>
-        </div>
-      </div>
 
-      <div className="grid md:grid-cols-3 gap-8">
-          <div className="md:col-span-2 space-y-8">
-            <div>
-                <h3 className="text-xl font-semibold mb-4">Order History</h3>
-                {loading ? <p>Loading orders...</p> : (
-                    <div className="space-y-4">
-                        {orders.map(order => (
-                            <div key={order.id} className="card p-4">
-                                <div className="flex justify-between items-start mb-2">
-                                    <div>
-                                        <div className="font-bold">Order #{order.id.slice(0, 8)}</div>
-                                        <div className="text-sm text-charcoal/60">{new Date(order.createdAt).toLocaleDateString()}</div>
-                                    </div>
-                                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${order.status === 'delivered' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                                        {order.status.toUpperCase()}
-                                    </div>
-                                </div>
-                                <div className="space-y-2 mb-3">
-                                    {order.items.map((item, i) => (
-                                        <div key={i} className="text-sm flex justify-between">
-                                            <span>{item.book.title} x{item.quantity}</span>
-                                            <span>₦{(item.book.price * item.quantity).toLocaleString()}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                                <div className="border-t pt-2 flex justify-between font-bold">
-                                    <span>Total</span>
-                                    <span>₦{order.total.toLocaleString()}</span>
-                                </div>
-                            </div>
-                        ))}
-                        {orders.length === 0 && <p className="text-charcoal/60">No orders yet.</p>}
-                    </div>
+        {/* Sidebar — Request a Book */}
+        <div>
+          <div className="border border-[#EBEBEB] p-6 sticky top-24">
+            <h3 className="text-sm font-bold uppercase tracking-widest text-charcoal mb-1">Request a Book</h3>
+            <p className="text-xs text-charcoal/50 mb-5">Can&apos;t find what you&apos;re looking for? Let us know.</p>
+
+            {reqStatus === 'success' ? (
+              <div className="p-4 bg-green-50 border border-green-200 text-green-700 text-sm font-medium">
+                Request submitted! We&apos;ll be in touch.
+              </div>
+            ) : (
+              <form onSubmit={handleRequestSubmit} className="space-y-3">
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-widest text-charcoal/50 mb-1.5">Book Title *</label>
+                  <input
+                    value={reqTitle}
+                    onChange={e => setReqTitle(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-[#EBEBEB] text-sm focus:outline-none focus:border-charcoal/40 transition-colors"
+                    placeholder="e.g. The Psychology of Money"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-widest text-charcoal/50 mb-1.5">Author *</label>
+                  <input
+                    value={reqAuthor}
+                    onChange={e => setReqAuthor(e.target.value)}
+                    className="w-full px-3 py-2.5 border border-[#EBEBEB] text-sm focus:outline-none focus:border-charcoal/40 transition-colors"
+                    placeholder="e.g. Morgan Housel"
+                    required
+                  />
+                </div>
+                {reqStatus === 'error' && (
+                  <p className="text-xs text-red-600">{reqError}</p>
                 )}
-            </div>
-
-            <div>
-                <h3 className="text-xl font-semibold mb-4">My Book Requests</h3>
-                <div className="space-y-4">
-                    {requests.map(req => (
-                        <div key={req.id} className="card p-4 flex justify-between items-center">
-                            <div>
-                                <div className="font-bold">{req.bookTitle}</div>
-                                <div className="text-sm text-charcoal/60">by {req.author}</div>
-                                <div className="text-xs text-charcoal/40 mt-1">{new Date(req.createdAt).toLocaleDateString()}</div>
-                            </div>
-                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                req.status === 'fulfilled' ? 'bg-green-100 text-green-700' : 
-                                req.status === 'cancelled' ? 'bg-red-100 text-red-700' : 
-                                'bg-yellow-100 text-yellow-700'
-                            }`}>
-                                {req.status.toUpperCase()}
-                            </span>
-                        </div>
-                    ))}
-                    {requests.length === 0 && <p className="text-charcoal/60">No requests yet.</p>}
-                </div>
-            </div>
-
-            <div>
-                <h3 className="text-xl font-semibold mb-4">My Wishlist</h3>
-                <div className="grid grid-cols-2 gap-4">
-                    {wishlist.map(book => (
-                        <div key={book.id} className="card p-4 flex gap-4">
-                            {book.coverUrl && (
-                                <div className="w-16 h-24 relative flex-shrink-0 bg-beige rounded overflow-hidden">
-                                    <img src={book.coverUrl} alt={book.title} className="object-cover w-full h-full" />
-                                </div>
-                            )}
-                            <div>
-                                <h4 className="font-bold text-sm line-clamp-2">{book.title}</h4>
-                                <p className="text-xs text-charcoal/60 mb-2">{book.author}</p>
-                                <Link href={`/catalog/${book.id}`} className="text-xs text-terracotta hover:underline">
-                                    View Details
-                                </Link>
-                            </div>
-                        </div>
-                    ))}
-                    {wishlist.length === 0 && <p className="text-charcoal/60 col-span-2">No items in wishlist.</p>}
-                </div>
-            </div>
+                <button
+                  type="submit"
+                  disabled={reqStatus === 'loading'}
+                  className="w-full py-3 text-white text-[11px] font-bold uppercase tracking-widest transition-opacity hover:opacity-90 disabled:opacity-50"
+                  style={{ backgroundColor: '#1E3777' }}
+                >
+                  {reqStatus === 'loading' ? 'Submitting…' : 'Submit Request'}
+                </button>
+              </form>
+            )}
           </div>
-
-          <div>
-            <div className="card p-6 bg-white sticky top-24">
-                <h3 className="font-bold text-lg mb-4">Request a Book</h3>
-                <p className="text-sm text-charcoal/60 mb-4">Can't find what you're looking for? Let us know!</p>
-                <form onSubmit={handleRequestSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-xs font-medium mb-1">Book Title</label>
-                        <input 
-                            value={reqTitle}
-                            onChange={e => setReqTitle(e.target.value)}
-                            className="w-full p-2 border border-beige rounded-xl"
-                            placeholder="e.g. The Psychology of Money"
-                            required
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-xs font-medium mb-1">Author</label>
-                        <input 
-                            value={reqAuthor}
-                            onChange={e => setReqAuthor(e.target.value)}
-                            className="w-full p-2 border border-beige rounded-xl"
-                            placeholder="e.g. Morgan Housel"
-                            required
-                        />
-                    </div>
-                    <button type="submit" className="w-full py-2 bg-terracotta text-white rounded-xl shadow-soft">
-                        Submit Request
-                    </button>
-                </form>
-            </div>
-          </div>
+        </div>
       </div>
     </div>
   )

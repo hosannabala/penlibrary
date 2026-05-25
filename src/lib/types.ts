@@ -7,6 +7,7 @@ export type UserProfile = {
   level: 'Bronze' | 'Silver' | 'Gold' | 'Platinum'
   streak: number
   badges: string[]
+  wishlist?: string[]
 }
 
 export type Book = {
@@ -14,12 +15,16 @@ export type Book = {
   title: string
   author: string
   price: number
+  salePrice?: number
   costPrice?: number
   category: string
   coverUrl?: string
   description?: string
   featured?: boolean
   stock: number
+  preOrder?: boolean
+  bestSeller?: boolean
+  createdAt?: string
 }
 
 export type CartItem = {
@@ -54,10 +59,13 @@ export type Order = {
   status: 'pending' | 'processing' | 'shipped' | 'delivered' | 'cancelled'
   paymentStatus?: 'paid' | 'unpaid'
   paymentReference?: string
-  createdAt: string
+  amountPaid?: number
+  createdAt?: string
   customerName?: string
   customerEmail?: string
+  customerPhone?: string
   shippingAddress?: string
+  address?: string
   deliveryMethod?: 'delivery' | 'pickup'
 }
 
@@ -71,11 +79,11 @@ export type ClubMeeting = {
   id: string
   title: string
   date: string
-  time: string
-  location: string // e.g., "Google Meet" or physical address
-  bookId?: string // Optional linked book
+  time?: string
+  location?: string
+  bookId?: string
   bookTitle?: string
-  description: string
+  description?: string
   meetingLink?: string
   type: 'discussion' | 'event' | 'meetup'
 }

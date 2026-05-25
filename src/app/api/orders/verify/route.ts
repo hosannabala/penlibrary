@@ -1,116 +1,110 @@
 import { NextResponse } from 'next/server'
-import { getAdminFirestore } from '@/lib/firebase-admin'
-import { FieldValue } from 'firebase-admin/firestore'
+import { createServerClient } from '@/lib/supabase'
+import { sendOrderConfirmationEmail } from '@/lib/email'
 
 export async function POST(req: Request) {
-  console.log('Verify API called')
   try {
-    const { reference, orderData, userId } = await req.json()
-    console.log('Verifying reference:', reference)
+    const { reference } = await req.json()
 
-    const secret = process.env.PAYSTACK_SECRET
-
-    if (!secret) {
-      console.error('PAYSTACK_SECRET is missing')
-      return NextResponse.json({ error: 'Server configuration error: PAYSTACK_SECRET missing' }, { status: 500 })
+    if (!reference) {
+      return NextResponse.json({ error: 'Order reference is required' }, { status: 400 })
     }
 
-    // 1. Verify with Paystack
-    console.log('Calling Paystack API...')
-    const verifyRes = await fetch(`https://api.paystack.co/transaction/verify/${reference}`, {
-      headers: {
-        Authorization: `Bearer ${secret}`
-      }
-    })
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return NextResponse.json({ error: 'Paystack not configured' }, { status: 500 })
+    }
 
+    const db = createServerClient()
+
+    // Idempotency — already confirmed
+    const { data: existing } = await db
+      .from('orders')
+      .select('*')
+      .eq('payment_reference', reference)
+      .maybeSingle()
+
+    if (existing?.payment_status === 'paid') {
+      return NextResponse.json({ success: true, message: 'Order already confirmed' })
+    }
+
+    // Verify with Paystack
+    const verifyRes = await fetch(
+      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        },
+      },
+    )
     const verifyData = await verifyRes.json()
-    console.log('Paystack response:', verifyData.status, verifyData.message)
 
-    if (!verifyData.status || verifyData.data.status !== 'success') {
-      console.error('Paystack verification failed:', verifyData)
-      return NextResponse.json({ error: 'Payment verification failed: ' + verifyData.message }, { status: 400 })
+    if (!verifyData.status || verifyData.data?.status !== 'success') {
+      return NextResponse.json({ error: 'Payment not confirmed by Paystack' }, { status: 400 })
     }
 
-    // 2. Check if order exists
-    const db = getAdminFirestore()
-    const ordersRef = db.collection('orders')
-    const q = await ordersRef.where('paymentReference', '==', reference).limit(1).get()
+    const amountPaid = Math.round(verifyData.data.amount / 100) // kobo → naira
 
-    if (!q.empty) {
-      return NextResponse.json({ message: 'Order already exists' }, { status: 200 })
+    // Guard against underpayment (allow 1 naira tolerance for rounding)
+    if (existing && amountPaid < Math.round(existing.total) - 1) {
+      console.error(`Amount mismatch: paid ₦${amountPaid}, expected ₦${existing.total} (ref: ${reference})`)
+      return NextResponse.json({ error: 'Payment amount does not match order total' }, { status: 400 })
     }
 
-    // 3. Create Order
-    // Ensure critical fields are server-controlled or verified
-    const amountPaid = verifyData.data.amount / 100
+    if (existing) {
+      const { error: updateError } = await db
+        .from('orders')
+        .update({ status: 'processing', payment_status: 'paid', amount_paid: amountPaid })
+        .eq('payment_reference', reference)
+      if (updateError) throw updateError
 
-    // Basic validation: Check if paid amount matches order total
-    // (Allow small difference for potential rounding, though unlikely with Paystack)
-    if (Math.abs(amountPaid - orderData.total) > 50) {
-        console.warn('Mismatch in paid amount vs order total', { amountPaid, orderTotal: orderData.total })
-        // We still process it but flag it? Or reject? 
-        // For now, we update the total to what was actually paid.
-    }
-
-    const finalOrder = {
-      ...orderData,
-      total: amountPaid, // Override with verified amount
-      paymentStatus: 'paid',
-      paymentReference: reference,
-      createdAt: FieldValue.serverTimestamp(), // Server timestamp
-      amountPaid: amountPaid // Trusted amount from Paystack
-    }
-
-    await ordersRef.add(finalOrder)
-
-    // 4. Update Inventory (Server Side)
-    // Decrease stock for each item in the order
-    if (orderData.items && Array.isArray(orderData.items)) {
-        console.log('Updating inventory...')
-        const batch = db.batch()
-        
-        for (const item of orderData.items) {
-            if (item.book && item.book.id) {
-                const bookRef = db.collection('books').doc(item.book.id)
-                // Use FieldValue.increment with negative quantity
-                batch.update(bookRef, { 
-                    stock: FieldValue.increment(-item.quantity) 
-                })
-            }
+      // Decrement stock
+      const items = existing.items ?? []
+      for (const item of items) {
+        if (item.book?.id && item.quantity > 0) {
+          await db.rpc('decrement_stock', { book_id: item.book.id, qty: item.quantity })
         }
-        
-        await batch.commit()
-        console.log('Inventory updated.')
+      }
+
+      // Award XP if logged-in user
+      const userId = existing.user_id
+      if (userId) {
+        const { data: profile } = await db
+          .from('user_profiles')
+          .select('xp, streak')
+          .eq('uid', userId)
+          .single()
+
+        if (profile) {
+          const newXp = (profile.xp ?? 0) + 100
+          let level = 'Bronze'
+          if (newXp >= 5000) level = 'Platinum'
+          else if (newXp >= 1500) level = 'Gold'
+          else if (newXp >= 500) level = 'Silver'
+
+          await db
+            .from('user_profiles')
+            .update({ xp: newXp, level, streak: (profile.streak ?? 0) + 1 })
+            .eq('uid', userId)
+        }
+      }
     }
 
-    // 5. Gamification (Server Side)
-    if (userId && userId !== 'guest') {
-        const userRef = db.collection('users').doc(userId)
-        
-        await db.runTransaction(async (t) => {
-            const doc = await t.get(userRef)
-            if (!doc.exists) return
-            
-            const data = doc.data()
-            const currentXp = data?.xp || 0
-            const currentStreak = data?.streak || 0
-            const badges = data?.badges || []
-            
-            // Logic matches gamification.ts
-            const newXp = currentXp + 100
-            
-            let level = 'Bronze'
-            if (newXp >= 5000) level = 'Platinum'
-            else if (newXp >= 1500) level = 'Gold'
-            else if (newXp >= 500) level = 'Silver'
-
-            t.update(userRef, {
-                xp: newXp,
-                streak: currentStreak + 1,
-                level: level,
-                // badges could be updated here if we had badge logic
-            })
-        })
+    // Send order confirmation email (fire-and-forget)
+    if (existing?.customer_email) {
+      const items = (existing.items ?? []).map((i: any) => ({
+        title: i.book?.title ?? 'Book',
+        quantity: i.quantity ?? 1,
+        price: i.book?.salePrice ?? i.book?.price ?? 0,
+      }))
+      sendOrderConfirmationEmail({
+        to: existing.customer_email,
+        customerName: existing.customer_name ?? 'Customer',
+        orderRef: reference,
+        items,
+        total: amountPaid,
+        deliveryMethod: existing.delivery_method ?? 'delivery',
+        shippingAddress: existing.address ?? undefined,
+      }).catch(err => console.error('[email] order confirmation failed:', err))
     }
 
     return NextResponse.json({ success: true })

@@ -1,64 +1,46 @@
 import { NextResponse } from 'next/server'
-import { getAdminFirestore } from '@/lib/firebase-admin'
+import { createServerClient } from '@/lib/supabase'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
+export async function GET(req: Request) {
+  const secret = process.env.DIAGNOSTICS_SECRET
+  const provided = req.headers.get('x-diagnostics-secret') ?? new URL(req.url).searchParams.get('secret')
+  if (!secret || provided !== secret) {
+    return new Response('Forbidden', { status: 403 })
+  }
   const results: any = {
     timestamp: new Date().toISOString(),
     env: {
-      PAYSTACK_SECRET: { present: !!process.env.PAYSTACK_SECRET, length: process.env.PAYSTACK_SECRET?.length || 0 },
-      FIREBASE_PROJECT_ID: { present: !!process.env.FIREBASE_PROJECT_ID, value: process.env.FIREBASE_PROJECT_ID },
-      FIREBASE_CLIENT_EMAIL: { present: !!process.env.FIREBASE_CLIENT_EMAIL, value: process.env.FIREBASE_CLIENT_EMAIL },
-      FIREBASE_PRIVATE_KEY: { present: !!process.env.FIREBASE_PRIVATE_KEY, validFormat: process.env.FIREBASE_PRIVATE_KEY?.includes('BEGIN PRIVATE KEY') },
+      NEXT_PUBLIC_SUPABASE_URL: { present: !!process.env.NEXT_PUBLIC_SUPABASE_URL },
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: { present: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY },
+      SUPABASE_SERVICE_ROLE_KEY: { present: !!process.env.SUPABASE_SERVICE_ROLE_KEY },
       NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY: { present: !!process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY },
-      NEXT_PUBLIC_FIREBASE_API_KEY: { present: !!process.env.NEXT_PUBLIC_FIREBASE_API_KEY },
+      PAYSTACK_SECRET_KEY: { present: !!process.env.PAYSTACK_SECRET_KEY },
     },
-    firebase: {
-        adminInit: false,
-        firestoreConnection: false,
-        firestoreWrite: false,
-        firestoreRead: false,
-        latencyMs: 0
+    supabase: {
+      connection: false,
+      booksTable: false,
+      latencyMs: 0,
     },
     system: {
-        nodeEnv: process.env.NODE_ENV,
-        memoryUsage: process.memoryUsage(),
+      nodeEnv: process.env.NODE_ENV,
+      memoryUsage: process.memoryUsage(),
     },
-    error: null
+    error: null,
   }
 
   const start = Date.now()
-
   try {
-    // 1. Check Admin Init
-    const db = getAdminFirestore()
-    results.firebase.adminInit = true
-
-    // 2. Check Connection (List Collections)
-    await db.listCollections()
-    results.firebase.firestoreConnection = true
-
-    // 3. Check Write/Read
-    const testRef = db.collection('_diagnostics').doc('health_check')
-    const testData = { lastCheck: new Date().toISOString(), status: 'ok' }
-    await testRef.set(testData)
-    results.firebase.firestoreWrite = true
-
-    const docSnap = await testRef.get()
-    if (docSnap.exists && docSnap.data()?.status === 'ok') {
-        results.firebase.firestoreRead = true
-    }
-    
-    // Cleanup (optional, but good practice)
-    await testRef.delete()
-
-    results.firebase.latencyMs = Date.now() - start
-
+    const supabase = createServerClient()
+    const { error } = await supabase.from('books').select('id').limit(1)
+    if (error) throw error
+    results.supabase.connection = true
+    results.supabase.booksTable = true
+    results.supabase.latencyMs = Date.now() - start
   } catch (error: any) {
     results.error = error.message
-    results.stack = error.stack
-    console.error('Diagnostics Error:', error)
+    console.error('Diagnostics error:', error)
   }
 
   return NextResponse.json(results)

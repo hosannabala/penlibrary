@@ -1,5 +1,4 @@
-import { collection, getDocs, addDoc, deleteDoc, doc } from 'firebase/firestore'
-import { db } from './firebase'
+import { supabase } from './supabase'
 
 export type GalleryItem = {
   id: string
@@ -7,17 +6,21 @@ export type GalleryItem = {
   title?: string
 }
 
-const galleryRef = collection(db, 'gallery')
-
 export async function getGallery(): Promise<GalleryItem[]> {
-  const snapshot = await getDocs(galleryRef)
-  return snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() } as GalleryItem))
+  const { data, error } = await supabase
+    .from('gallery')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) return []
+  return (data ?? []).map(r => ({ id: r.id, url: r.url, title: r.title ?? undefined }))
 }
 
 export async function addGalleryItem(url: string, title?: string) {
-  return await addDoc(galleryRef, { url, title, createdAt: new Date().toISOString() })
+  const { error } = await supabase.from('gallery').insert({ url, title: title ?? null })
+  if (error) throw error
 }
 
 export async function deleteGalleryItem(id: string) {
-  return await deleteDoc(doc(db, 'gallery', id))
+  const { error } = await supabase.from('gallery').delete().eq('id', id)
+  if (error) throw error
 }

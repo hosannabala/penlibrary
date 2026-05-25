@@ -1,0 +1,11 @@
+User-agent: *
+Allow: /
+
+Disallow: /admin
+Disallow: /dashboard
+Disallow: /cart
+Disallow: /checkout
+Disallow: /auth/
+Disallow: /api/
+
+Sitemap: https://penlibrary.vercel.app/sitemap.xml

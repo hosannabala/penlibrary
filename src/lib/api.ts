@@ -1,16 +1,18 @@
-import { db } from './firebase'
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore'
+import { supabase } from './supabase'
 
-export async function requestConsultation(payload: { name: string; email: string; topic: string; notes?: string }) {
-  try {
-    await addDoc(collection(db, 'consultations'), {
-      ...payload,
-      status: 'requested',
-      createdAt: serverTimestamp()
-    })
-    return { ok: true }
-  } catch (error) {
-    console.error('Error requesting consultation:', error)
-    throw new Error('failed to request consultation')
-  }
+export async function requestConsultation(payload: {
+  name: string
+  email: string
+  topic: string
+  notes?: string
+}) {
+  const { error } = await supabase.from('consultations').insert({
+    name: payload.name,
+    email: payload.email,
+    topic: payload.topic,
+    notes: payload.notes ?? null,
+    status: 'requested',
+  })
+  if (error) throw new Error('Failed to request consultation')
+  return { ok: true }
 }

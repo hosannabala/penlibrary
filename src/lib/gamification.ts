@@ -1,18 +1,8 @@
-import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore'
-import { db } from './firebase'
+import { supabase } from './supabase'
 import type { UserProfile } from './types'
 
 const thresholds = [0, 500, 1500, 5000]
 const labels: UserProfile['level'][] = ['Bronze', 'Silver', 'Gold', 'Platinum']
-
-export async function ensureProfile(uid: string, email: string) {
-  const ref = doc(db, 'users', uid)
-  const snap = await getDoc(ref)
-  if (!snap.exists()) {
-    const profile: UserProfile = { uid, email, xp: 0, level: 'Bronze', streak: 0, badges: [] }
-    await setDoc(ref, { ...profile, createdAt: serverTimestamp() })
-  }
-}
 
 export function levelFor(xp: number): UserProfile['level'] {
   let idx = 0
@@ -20,28 +10,61 @@ export function levelFor(xp: number): UserProfile['level'] {
   return labels[idx]
 }
 
-export async function getUserProfile(uid: string): Promise<UserProfile | null> {
-  const ref = doc(db, 'users', uid)
-  const snap = await getDoc(ref)
-  if (snap.exists()) {
-    return snap.data() as UserProfile
+export async function ensureProfile(uid: string, email: string) {
+  const { data } = await supabase
+    .from('user_profiles')
+    .select('uid')
+    .eq('uid', uid)
+    .single()
+
+  if (!data) {
+    await supabase.from('user_profiles').insert({
+      uid,
+      email,
+      xp: 0,
+      level: 'Bronze',
+      streak: 0,
+      badges: [],
+      wishlist: [],
+    })
   }
-  return null
+}
+
+export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+  const { data } = await supabase
+    .from('user_profiles')
+    .select('*')
+    .eq('uid', uid)
+    .single()
+
+  if (!data) return null
+  return {
+    uid: data.uid,
+    email: data.email,
+    displayName: data.display_name ?? undefined,
+    photoURL: data.photo_url ?? undefined,
+    xp: data.xp,
+    level: data.level as UserProfile['level'],
+    streak: data.streak,
+    badges: data.badges ?? [],
+    wishlist: data.wishlist ?? [],
+  }
 }
 
 export async function award(uid: string, amount: number, badge?: string) {
-  const ref = doc(db, 'users', uid)
-  const snap = await getDoc(ref)
-  const data = snap.data() as any
-  const xp = (data?.xp || 0) + amount
+  const profile = await getUserProfile(uid)
+  if (!profile) return
+  const xp = profile.xp + amount
   const level = levelFor(xp)
-  const badges = Array.from(new Set([...(data?.badges || []), ...(badge ? [badge] : [])]))
-  await updateDoc(ref, { xp, level, badges })
+  const badges = Array.from(new Set([...profile.badges, ...(badge ? [badge] : [])]))
+  await supabase.from('user_profiles').update({ xp, level, badges }).eq('uid', uid)
 }
 
 export async function bumpStreak(uid: string) {
-  const ref = doc(db, 'users', uid)
-  const snap = await getDoc(ref)
-  const streak = (snap.data()?.streak || 0) + 1
-  await updateDoc(ref, { streak })
+  const profile = await getUserProfile(uid)
+  if (!profile) return
+  await supabase
+    .from('user_profiles')
+    .update({ streak: profile.streak + 1 })
+    .eq('uid', uid)
 }

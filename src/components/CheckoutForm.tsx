@@ -1,374 +1,601 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
-import { usePaystackPayment } from 'react-paystack'
+import Link from 'next/link'
 import { useCart } from '../context/CartContext'
 import { useAuth } from '../context/AuthContext'
-import type { Order } from '../lib/types'
+import { useSiteSettings } from '../context/SiteSettingsContext'
+import { supabase } from '../lib/supabase'
+import { createPendingOrderAction } from '../app/actions/orders'
+import type { Book } from '../lib/types'
+
+function effectivePrice(book: Book) {
+  return typeof book.salePrice === 'number' && book.salePrice < book.price
+    ? book.salePrice : book.price
+}
+
+
+type Courier = {
+  courierId: number
+  serviceCode: string
+  name: string
+  fee: number
+  deliveryEta: string
+}
+
+const FLAT_RATE_FALLBACK: Courier = {
+  courierId: 0,
+  serviceCode: 'flat-rate',
+  name: 'Standard Delivery',
+  fee: 2500,
+  deliveryEta: '3–5 business days',
+}
+
+type Stage = 'form' | 'verifying' | 'complete'
 
 export default function CheckoutForm() {
   const { items, total, clearCart } = useCart()
   const { user } = useAuth()
-  const router = useRouter()
-  
-  const [name, setName] = useState('')
+  const { pickup_address: PICKUP_ADDRESS } = useSiteSettings()
+
+  const [stage, setStage] = useState<Stage>('form')
+  const [orderRef, setOrderRef] = useState('')
+
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
-  const [address, setAddress] = useState('')
+  const [name, setName] = useState('')
   const [deliveryMethod, setDeliveryMethod] = useState<'delivery' | 'pickup'>('delivery')
+  const [street, setStreet] = useState('')
+  const [city, setCity] = useState('')
+  const [state, setState] = useState('')
+
+  // Shipbubble live rates
+  const [couriers, setCouriers] = useState<Courier[]>([])
+  const [selectedCourier, setSelectedCourier] = useState<Courier | null>(null)
+  const [requestToken, setRequestToken] = useState('')
+  const [ratesLoading, setRatesLoading] = useState(false)
+  const [ratesError, setRatesError] = useState('')
+
+  const [createAccount, setCreateAccount] = useState(false)
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+
+  const [agreed, setAgreed] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [success, setSuccess] = useState(false)
 
-  const SHIPPING_FEE = 1500
-  const finalTotal = deliveryMethod === 'delivery' ? total + SHIPPING_FEE : total
+  const fullAddress = [street, city, state ? `${state} State` : '', 'Nigeria'].filter(Boolean).join(', ')
+  const shippingFee = deliveryMethod === 'delivery' ? (selectedCourier?.fee ?? 0) : 0
+  const finalTotal = total + shippingFee
 
-  // Prefill email if user is logged in
+  // Load Paystack inline script once
+  useEffect(() => {
+    if (document.getElementById('paystack-script')) return
+    const script = document.createElement('script')
+    script.id = 'paystack-script'
+    script.src = 'https://js.paystack.co/v1/inline.js'
+    script.async = true
+    document.body.appendChild(script)
+  }, [])
+
   useEffect(() => {
     if (user?.email) setEmail(user.email)
     if (user?.displayName) setName(user.displayName)
-    
-    // Debug Paystack Key
-    if (!process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY) {
-        console.error('Paystack Key Missing in Client!')
-    } else {
-        console.log('Paystack Key Loaded:', process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY.slice(0, 10) + '...')
-    }
   }, [user])
 
-  // Redirect if cart is empty
-  useEffect(() => {
-    if (items.length === 0 && !success) {
-      router.push('/cart')
+  async function fetchShippingRates() {
+    if (!street || !city || !state || !name || !phone) {
+      setRatesError('Please fill in your name, phone, street, city and state first.')
+      return
     }
-  }, [items, router, success])
-
-  const config = {
-    reference: (new Date()).getTime().toString(),
-    email,
-    amount: Math.round(finalTotal * 100), // Amount is in kobo
-    publicKey: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY || '',
-    metadata: {
-              name,
-              phone,
-              address: deliveryMethod === 'delivery' ? address : 'Pickup',
-              uid: user?.uid,
-              items: items.map(item => ({
-                book: {
-                  id: item.book.id,
-                  title: item.book.title,
-                  author: item.book.author,
-                  category: item.book.category,
-                  price: item.book.price,
-                  coverUrl: item.book.coverUrl,
-                  stock: item.book.stock
-                },
-                quantity: item.quantity
-              })),
-              custom_fields: [
-                {
-                  display_name: "Phone Number",
-                  variable_name: "phone",
-                  value: phone
-                },
-        {
-          display_name: "Delivery Method",
-          variable_name: "delivery_method",
-          value: deliveryMethod
-        },
-        {
-          display_name: "Shipping Address",
-          variable_name: "shipping_address",
-          value: deliveryMethod === 'delivery' ? address : 'Pickup'
-        }
-      ]
-    },
-  }
-
-  const initializePayment = usePaystackPayment(config)
-
-  const [isVerifying, setIsVerifying] = useState(false)
-
-  const onSuccess = async (reference: any) => {
-    console.log('Paystack onSuccess called with:', reference)
-    // IMMEDIATELY show full screen processing state
-    // This hides the form so the user doesn't see "input payment details"
-    setIsVerifying(true) 
-    setLoading(true)
-    setError('')
-    
+    setRatesLoading(true)
+    setRatesError('')
+    setCouriers([])
+    setSelectedCourier(null)
     try {
-      console.log('Verifying payment with server...')
-      // Server-side verification and order creation
-      const res = await fetch('/api/orders/verify', {
+      const res = await fetch('/api/shipping/rates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            reference: reference.reference,
-            userId: user?.uid,
-            orderData: {
-                items,
-                total: finalTotal,
-                customerName: name,
-                customerEmail: email,
-                shippingAddress: deliveryMethod === 'delivery' ? address : 'Pickup',
-                deliveryMethod,
-                status: 'pending'
-            }
-        })
+          customerAddress: fullAddress,
+          customerName: name,
+          customerPhone: phone,
+          customerEmail: email,
+          itemCount: items.reduce((sum, i) => sum + i.quantity, 0),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Could not fetch rates')
+      const liveCouriers: Courier[] = data.couriers ?? []
+      if (liveCouriers.length > 0) {
+        setCouriers(liveCouriers)
+        setRequestToken(data.requestToken ?? '')
+        setSelectedCourier(liveCouriers[0])
+      } else {
+        setCouriers([FLAT_RATE_FALLBACK])
+        setSelectedCourier(FLAT_RATE_FALLBACK)
+        setRatesError('No couriers available for this route — standard rate applied.')
+      }
+    } catch {
+      setCouriers([FLAT_RATE_FALLBACK])
+      setSelectedCourier(FLAT_RATE_FALLBACK)
+      setRatesError('Live rates unavailable — standard delivery rate of ₦2,500 applied.')
+    } finally {
+      setRatesLoading(false)
+    }
+  }
+
+  const handlePay = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+
+    if (!email || !name || !phone) {
+      setError('Please fill in all required fields.')
+      return
+    }
+    if (deliveryMethod === 'delivery' && (!street || !city || !state)) {
+      setError('Please enter your full shipping address (street, city and state).')
+      return
+    }
+    if (deliveryMethod === 'delivery' && !selectedCourier) {
+      setError('Please get shipping rates and select a courier before paying.')
+      return
+    }
+    if (!agreed) {
+      setError('Please agree to the Terms & Conditions to proceed.')
+      return
+    }
+    if (createAccount && password !== confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+    if (createAccount && password.length < 6) {
+      setError('Password must be at least 6 characters.')
+      return
+    }
+
+    if (!(window as any).PaystackPop) {
+      setError('Payment system is still loading. Please wait a moment and try again.')
+      return
+    }
+
+    setLoading(true)
+
+    try {
+      const shippingAddress = deliveryMethod === 'delivery' ? fullAddress : PICKUP_ADDRESS
+
+      // Create pending order in DB first
+      const reference = await createPendingOrderAction({
+        userId: user?.uid ?? null,
+        items,
+        total: finalTotal,
+        customerName: name,
+        customerEmail: email,
+        customerPhone: phone,
+        deliveryMethod,
+        shippingAddress,
+        shippingFee,
+        courierName: selectedCourier?.name ?? null,
       })
 
-      console.log('Server response status:', res.status)
-      const data = await res.json()
-      console.log('Server response data:', data)
-
-      if (!res.ok) {
-          throw new Error(data.error || 'Payment verification failed')
+      // Optional account creation — fire-and-forget
+      if (createAccount && password && !user) {
+        supabase.auth.signUp({ email, password }).catch(() => {})
       }
-      
-      console.log('Verification successful! Clearing cart and setting success.')
-      clearCart()
-      setSuccess(true)
-      // Note: isVerifying stays true until success takes over rendering
-      
+
+      // Open Paystack popup — callback must be a plain (non-async) function
+      const handler = (window as any).PaystackPop.setup({
+        key: process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY,
+        email,
+        amount: finalTotal * 100, // kobo
+        ref: reference,
+        currency: 'NGN',
+        metadata: {
+          custom_fields: [
+            { display_name: 'Phone', variable_name: 'phone', value: phone },
+            { display_name: 'Delivery Method', variable_name: 'delivery_method', value: deliveryMethod },
+          ],
+        },
+        callback: (response: { reference: string }) => {
+          setStage('verifying')
+          fetch('/api/orders/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reference: response.reference }),
+          })
+            .then(res => res.json().then(data => ({ ok: res.ok, data })))
+            .then(({ ok, data }) => {
+              if (!ok) throw new Error(data.error || 'Verification failed')
+              setOrderRef(reference)
+              clearCart()
+              setStage('complete')
+            })
+            .catch((err: any) => {
+              setError(
+                `Payment received but order update failed. Please contact us with your reference: ${reference}. Error: ${err.message}`
+              )
+              setStage('form')
+              setLoading(false)
+            })
+        },
+        onClose: () => {
+          setLoading(false)
+        },
+      })
+
+      handler.openIframe()
     } catch (err: any) {
-      console.error('Order creation failed:', err)
-      setError(err.message || 'Payment successful but order creation failed. Please contact support with reference: ' + reference.reference)
-      setIsVerifying(false) // Allow them to see error
-    } finally {
+      setError(err.message || 'Something went wrong. Please try again.')
       setLoading(false)
     }
   }
 
-  // Redirect effect
-  useEffect(() => {
-    if (success) {
-        // Instant redirect attempts
-        router.push('/dashboard')
-        
-        // Backup
-        const timer = setTimeout(() => {
-            window.location.href = '/dashboard'
-        }, 1000)
-        return () => clearTimeout(timer)
-    }
-  }, [success, router])
-
-  if (success) {
+  // ── Verifying screen ────────────────────────────────────────────────────────
+  if (stage === 'verifying') {
     return (
-      <div className="text-center py-12">
-        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
-          <svg className="w-10 h-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-        </div>
-        <h2 className="text-3xl font-bold text-terracotta mb-4">Order Confirmed!</h2>
-        <p className="text-charcoal/60 mb-8">Thank you for your purchase. Redirecting you to your dashboard...</p>
-        
-        <div className="flex flex-col gap-3 justify-center items-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-terracotta"></div>
-        </div>
+      <div className="min-h-[60vh] flex flex-col items-center justify-center gap-4 text-center px-4">
+        <svg className="animate-spin h-10 w-10 text-terracotta" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+          <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" className="opacity-75" />
+        </svg>
+        <p className="text-lg font-bold text-charcoal">Confirming your payment…</p>
+        <p className="text-sm text-charcoal/50">Please do not close this page.</p>
       </div>
     )
   }
 
-  if (isVerifying) {
-      return (
-        <div className="text-center py-20">
-            <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-terracotta mx-auto mb-6"></div>
-            <h2 className="text-2xl font-bold text-charcoal mb-2">Processing Payment...</h2>
-            <p className="text-charcoal/60">Please wait while we confirm your order.</p>
-        </div>
-      )
-  }
-
-  const onClose = () => {
-    console.log('Payment closed')
-  }
-
-  const handlePay = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!email || !name || (deliveryMethod === 'delivery' && !address) || !phone) {
-      setError('Please fill in all fields')
-      return
-    }
-    
-    if (!process.env.NEXT_PUBLIC_PAYSTACK_PUBLIC_KEY) {
-        setError('Paystack public key is missing in environment variables.')
-        return
-    }
-
-    // @ts-ignore - react-paystack types are sometimes inconsistent
-    initializePayment(onSuccess, onClose)
-  }
-
-  if (success) {
+  // ── Order complete screen ────────────────────────────────────────────────────
+  if (stage === 'complete') {
     return (
-      <div className="max-w-xl mx-auto py-16 px-4 text-center">
-        <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
-          <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+      <div className="max-w-lg mx-auto py-20 px-4 text-center">
+        <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
+          <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
           </svg>
         </div>
-        <h2 className="text-3xl font-bold mb-4 text-charcoal">Order Confirmed!</h2>
-        <p className="text-charcoal/70 mb-8">
-          Redirecting to your dashboard...
+        <h1 className="text-2xl font-bold text-charcoal mb-2">Order Confirmed!</h1>
+        <p className="text-charcoal/60 text-sm mb-1">
+          Your order has been placed and is being processed.
         </p>
-        <div className="flex flex-col gap-3 justify-center items-center">
-            <button 
-              onClick={() => router.push('/dashboard')}
-              className="px-8 py-3 bg-terracotta text-white rounded-xl shadow-soft hover:shadow-lg transition-all"
+        <p className="text-xs text-charcoal/40 mb-6">
+          Reference: <span className="font-mono font-bold text-charcoal">{orderRef}</span>
+        </p>
+        <div className="flex flex-col sm:flex-row gap-3 justify-center">
+          {user ? (
+            <Link
+              href="/dashboard"
+              className="px-6 py-3 bg-terracotta text-white font-bold text-sm uppercase tracking-wide hover:bg-terracotta/90 transition-colors"
             >
-              Go to Dashboard
-            </button>
-            <button 
-              onClick={() => window.location.href = '/dashboard'}
-              className="text-sm text-charcoal/60 hover:text-terracotta underline"
-            >
-              Click here if not redirected
-            </button>
+              View My Orders
+            </Link>
+          ) : (
+            <p className="text-xs text-charcoal/50 px-4">
+              Save your reference number above to track your order.
+            </p>
+          )}
+          <Link
+            href="/catalog"
+            className="px-6 py-3 border border-beige text-charcoal font-bold text-sm uppercase tracking-wide hover:bg-offwhite transition-colors"
+          >
+            Continue Shopping
+          </Link>
         </div>
       </div>
     )
   }
 
+  // ── Checkout form ────────────────────────────────────────────────────────────
   return (
-    <div className="max-w-4xl mx-auto py-12 px-4">
-      <h1 className="text-3xl font-bold mb-8 text-charcoal">Checkout</h1>
-      
-      <div className="grid md:grid-cols-2 gap-8">
-        {/* Order Summary */}
-        <div className="bg-offwhite p-6 rounded-2xl h-fit">
-          <h2 className="text-xl font-bold mb-4 text-charcoal">Order Summary</h2>
-          <div className="space-y-4 mb-6">
-            {items.map((item) => (
-              <div key={item.book.id} className="flex justify-between items-center text-sm">
-                <span className="text-charcoal/80">
-                  {item.quantity}x {item.book.title}
-                </span>
-                <span className="font-medium">
-                  ₦{(item.book.price * item.quantity).toLocaleString()}
-                </span>
-              </div>
-            ))}
-          </div>
-          
-          <div className="border-t border-beige pt-4 space-y-2 mb-4">
-            <div className="flex justify-between text-sm text-charcoal/70">
-                <span>Subtotal</span>
-                <span>₦{total.toLocaleString()}</span>
-            </div>
-            <div className="flex justify-between text-sm text-charcoal/70">
-                <span>Shipping</span>
-                <span>{deliveryMethod === 'delivery' ? `₦${SHIPPING_FEE.toLocaleString()}` : 'Free'}</span>
-            </div>
-          </div>
+    <div className="max-w-5xl mx-auto py-10 px-4">
+      {/* Breadcrumb */}
+      <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider mb-10 overflow-x-auto whitespace-nowrap pb-1">
+        <Link href="/cart" className="text-charcoal/50 hover:text-terracotta transition-colors shrink-0">Cart</Link>
+        <span className="text-charcoal/30 shrink-0">›</span>
+        <span className="text-terracotta shrink-0">Checkout</span>
+        <span className="text-charcoal/30 shrink-0">›</span>
+        <span className="text-charcoal/40 shrink-0">Complete</span>
+      </div>
 
-          <div className="border-t border-beige pt-4 flex justify-between items-center font-bold text-lg">
-            <span>Total</span>
-            <span className="text-terracotta">₦{finalTotal.toLocaleString()}</span>
-          </div>
-        </div>
+      <div className="grid lg:grid-cols-5 gap-10">
+        {/* Left — Billing Form */}
+        <form onSubmit={handlePay} className="lg:col-span-3 space-y-6">
 
-        {/* Shipping Form */}
-        <form onSubmit={handlePay} className="space-y-4">
-          <div className="flex gap-4 p-1 bg-offwhite rounded-xl mb-6">
-            <button
-                type="button"
-                onClick={() => setDeliveryMethod('delivery')}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-                    deliveryMethod === 'delivery' ? 'bg-terracotta text-white shadow-sm' : 'text-charcoal/60 hover:text-charcoal'
-                }`}
-            >
-                Delivery
-            </button>
-            <button
-                type="button"
-                onClick={() => setDeliveryMethod('pickup')}
-                className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${
-                    deliveryMethod === 'pickup' ? 'bg-terracotta text-white shadow-sm' : 'text-charcoal/60 hover:text-charcoal'
-                }`}
-            >
-                Pickup
-            </button>
-          </div>
-
+          {/* Contact */}
           <div>
-            <label className="block text-sm font-medium text-charcoal/70 mb-1">Full Name</label>
-            <input 
-              required
-              type="text" 
-              value={name} 
-              onChange={e => setName(e.target.value)}
-              className="w-full p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta transition-colors"
-              placeholder="John Doe"
-            />
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-charcoal/70 mb-1">Email Address</label>
-            <input 
-              required
-              type="email" 
-              value={email} 
-              onChange={e => setEmail(e.target.value)}
-              className="w-full p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta transition-colors"
-              placeholder="john@example.com"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-charcoal/70 mb-1">Phone Number</label>
-            <input 
-              required
-              type="tel" 
-              value={phone} 
-              onChange={e => setPhone(e.target.value)}
-              className="w-full p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta transition-colors"
-              placeholder="+234..."
-            />
-          </div>
-
-          {deliveryMethod === 'delivery' && (
+            <h2 className="text-sm font-bold uppercase tracking-widest text-charcoal mb-4">Contact Information</h2>
+            <div className="space-y-3">
               <div>
-                <label className="block text-sm font-medium text-charcoal/70 mb-1">Shipping Address</label>
-                <textarea 
-                  required
-                  rows={3}
-                  value={address} 
-                  onChange={e => setAddress(e.target.value)}
-                  className="w-full p-3 border border-beige rounded-xl focus:outline-none focus:border-terracotta transition-colors"
-                  placeholder="Delivery address..."
+                <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Email Address *</label>
+                <input
+                  required type="email" value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                  placeholder="your@email.com"
                 />
               </div>
-          )}
-          
-          {deliveryMethod === 'pickup' && (
-              <div className="p-4 bg-beige/20 rounded-xl text-sm text-charcoal/80">
-                  <p className="font-semibold mb-1">Pickup Location:</p>
-                  <p>Pen Library Services, [Insert Address Here]</p>
-                  <p className="mt-2 text-xs text-charcoal/60">Please bring your order confirmation when picking up.</p>
+              <div>
+                <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Phone Number *</label>
+                <input
+                  required type="tel" value={phone}
+                  onChange={e => setPhone(e.target.value)}
+                  className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                  placeholder="+234 800 000 0000"
+                />
               </div>
+            </div>
+          </div>
+
+          {/* Delivery method */}
+          <div>
+            <h2 className="text-sm font-bold uppercase tracking-widest text-charcoal mb-4">Delivery Method</h2>
+            <div className="flex gap-1 p-1 bg-offwhite border border-beige rounded-xl">
+              {(['delivery', 'pickup'] as const).map(method => (
+                <button
+                  key={method} type="button"
+                  onClick={() => setDeliveryMethod(method)}
+                  className={`flex-1 py-3.5 text-sm font-bold uppercase tracking-wide transition-all ${
+                    deliveryMethod === method ? 'bg-terracotta text-white shadow-sm' : 'text-charcoal/60 hover:text-charcoal'
+                  }`}
+                >
+                  {method === 'delivery' ? '🚚 Delivery' : '🏪 Free Pickup'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Address */}
+          <div>
+            <h2 className="text-sm font-bold uppercase tracking-widest text-charcoal mb-4">
+              {deliveryMethod === 'delivery' ? 'Shipping Address' : 'Pickup Location'}
+            </h2>
+            {deliveryMethod === 'delivery' ? (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Full Name *</label>
+                  <input
+                    required type="text" value={name}
+                    onChange={e => { setName(e.target.value); setCouriers([]); setSelectedCourier(null) }}
+                    className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                    placeholder="John Doe"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Street Address *</label>
+                  <input
+                    required type="text" value={street}
+                    onChange={e => { setStreet(e.target.value); setCouriers([]); setSelectedCourier(null) }}
+                    className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                    placeholder="e.g. 12 Aba Road, GRA Phase 2"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">City *</label>
+                    <input
+                      required type="text" value={city}
+                      onChange={e => { setCity(e.target.value); setCouriers([]); setSelectedCourier(null) }}
+                      className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                      placeholder="e.g. Port Harcourt"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">State *</label>
+                    <select
+                      required value={state}
+                      onChange={e => { setState(e.target.value); setCouriers([]); setSelectedCourier(null) }}
+                      className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors bg-white"
+                    >
+                      <option value="">Select state</option>
+                      {['Abia','Adamawa','Akwa Ibom','Anambra','Bauchi','Bayelsa','Benue','Borno','Cross River','Delta','Ebonyi','Edo','Ekiti','Enugu','FCT','Gombe','Imo','Jigawa','Kaduna','Kano','Katsina','Kebbi','Kogi','Kwara','Lagos','Nasarawa','Niger','Ogun','Ondo','Osun','Oyo','Plateau','Rivers','Sokoto','Taraba','Yobe','Zamfara'].map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                {fullAddress && (
+                  <p className="text-xs text-charcoal/50 px-1">Shipping to: <span className="font-medium text-charcoal">{fullAddress}</span></p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={fetchShippingRates}
+                  disabled={ratesLoading}
+                  className="w-full py-2.5 border-2 border-terracotta text-terracotta text-sm font-bold uppercase tracking-wide hover:bg-terracotta/5 transition-colors disabled:opacity-50"
+                >
+                  {ratesLoading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                        <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" className="opacity-75" />
+                      </svg>
+                      Getting rates...
+                    </span>
+                  ) : couriers.length > 0 ? 'Refresh Shipping Rates' : 'Get Shipping Rates'}
+                </button>
+
+                {ratesError && (
+                  <p className={`text-xs px-1 ${ratesError.includes('unavailable') || ratesError.includes('applied') ? 'text-amber-600' : 'text-red-500'}`}>
+                    {ratesError}
+                  </p>
+                )}
+
+                {couriers.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs font-semibold text-charcoal/60 uppercase tracking-wide">Select Courier</p>
+                    {couriers.map(c => (
+                      <label
+                        key={c.serviceCode}
+                        className={`flex items-center justify-between p-3 border rounded-xl cursor-pointer transition-colors ${
+                          selectedCourier?.serviceCode === c.serviceCode
+                            ? 'border-terracotta bg-terracotta/5'
+                            : 'border-beige hover:border-terracotta/50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="radio" name="courier"
+                            checked={selectedCourier?.serviceCode === c.serviceCode}
+                            onChange={() => setSelectedCourier(c)}
+                            className="accent-terracotta"
+                          />
+                          <div>
+                            <p className="text-sm font-semibold text-charcoal">{c.name}</p>
+                            {c.deliveryEta && <p className="text-xs text-charcoal/50">{c.deliveryEta}</p>}
+                          </div>
+                        </div>
+                        <span className="text-sm font-bold text-terracotta">₦{c.fee.toLocaleString()}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Full Name *</label>
+                  <input
+                    required type="text" value={name}
+                    onChange={e => setName(e.target.value)}
+                    className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                    placeholder="John Doe"
+                  />
+                </div>
+                <div className="p-4 bg-beige/30 border border-beige rounded-xl text-sm">
+                  <p className="font-semibold mb-1 text-charcoal">Pickup Location</p>
+                  <p className="text-charcoal/70">{PICKUP_ADDRESS}</p>
+                  <p className="mt-2 text-xs text-charcoal/50">Bring your order confirmation when picking up.</p>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Optional account creation */}
+          {!user && (
+            <div className="border border-beige rounded-xl p-4">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox" checked={createAccount}
+                  onChange={e => setCreateAccount(e.target.checked)}
+                  className="mt-0.5 accent-terracotta"
+                />
+                <span className="text-sm text-charcoal/70">
+                  <span className="font-semibold text-charcoal">Save my details for faster checkout next time</span>
+                  <br />
+                  <span className="text-xs">Creates a free account with your email address.</span>
+                </span>
+              </label>
+              {createAccount && (
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Password *</label>
+                    <input
+                      type="password" value={password} minLength={6}
+                      onChange={e => setPassword(e.target.value)}
+                      className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                      placeholder="Minimum 6 characters"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-charcoal/60 uppercase tracking-wide mb-1.5">Confirm Password *</label>
+                    <input
+                      type="password" value={confirmPassword}
+                      onChange={e => setConfirmPassword(e.target.value)}
+                      className="w-full px-4 py-3 border border-beige rounded-xl text-sm focus:outline-none focus:border-terracotta transition-colors"
+                      placeholder="Repeat password"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
+          {/* Terms */}
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox" checked={agreed}
+              onChange={e => setAgreed(e.target.checked)}
+              className="mt-0.5 accent-terracotta"
+            />
+            <span className="text-sm text-charcoal/70">
+              I agree to the{' '}
+              <Link href={'/terms' as any} className="text-terracotta hover:underline">Terms & Conditions</Link>
+              {' '}and{' '}
+              <Link href={'/privacy' as any} className="text-terracotta hover:underline">Privacy Policy</Link>.
+            </span>
+          </label>
+
           {error && (
-            <div className="p-3 bg-red-50 text-red-600 rounded-xl text-sm">
+            <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-xl text-sm">
               {error}
             </div>
           )}
 
-          <button 
-            type="submit" 
-            disabled={loading || items.length === 0}
-            className="w-full py-4 bg-terracotta text-white rounded-xl font-bold shadow-soft hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed mt-4"
+          <button
+            type="submit" disabled={loading}
+            className="w-full py-4 bg-terracotta text-white font-bold uppercase tracking-widest text-sm hover:bg-terracotta/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-soft"
           >
-            {loading ? 'Processing...' : `Pay ₦${finalTotal.toLocaleString()}`}
+            {loading ? (
+              <span className="flex items-center justify-center gap-2">
+                <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+                  <path d="M4 12a8 8 0 018-8" stroke="currentColor" strokeWidth="4" className="opacity-75" />
+                </svg>
+                Opening payment…
+              </span>
+            ) : (
+              `Pay ₦${finalTotal.toLocaleString()}`
+            )}
           </button>
-          
-          <p className="text-xs text-center text-charcoal/50 mt-4">
-            Secured by Paystack. Your card details are processed securely.
+
+          <p className="text-xs text-center text-charcoal/40">
+            Secured by Paystack · Your payment details are encrypted and never stored by us.
           </p>
         </form>
+
+        {/* Right — Order Summary */}
+        <div className="lg:col-span-2">
+          <div className="border border-beige rounded-2xl p-6 sticky top-24">
+            <h2 className="text-sm font-bold uppercase tracking-widest text-charcoal mb-5">Order Summary</h2>
+
+            <div className="space-y-3 mb-5">
+              {items.map(item => {
+                const price = effectivePrice(item.book)
+                return (
+                  <div key={item.book.id} className="flex justify-between items-start gap-3 text-sm">
+                    <span className="text-charcoal/70 line-clamp-2 flex-1 leading-snug">
+                      {item.book.title}
+                      <span className="text-charcoal/40"> ×{item.quantity}</span>
+                    </span>
+                    <span className="font-semibold text-charcoal shrink-0">
+                      ₦{(price * item.quantity).toLocaleString()}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="border-t border-beige pt-4 space-y-2">
+              <div className="flex justify-between text-sm text-charcoal/60">
+                <span>Subtotal</span>
+                <span>₦{total.toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between text-sm text-charcoal/60">
+                <span>Shipping</span>
+                <span>
+                  {deliveryMethod === 'pickup'
+                    ? 'Free (Pickup)'
+                    : selectedCourier
+                      ? `₦${shippingFee.toLocaleString()}`
+                      : <span className="italic text-xs">Select courier above</span>}
+                </span>
+              </div>
+            </div>
+
+            <div className="border-t border-beige mt-3 pt-4 flex justify-between font-bold text-base">
+              <span className="text-charcoal">Total</span>
+              <span className="text-terracotta text-lg">₦{finalTotal.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

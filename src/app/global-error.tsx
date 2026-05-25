@@ -15,7 +15,8 @@ export default function GlobalError({
             <p className="mb-8 text-black/60 max-w-md">{error.message}</p>
             <button
                 onClick={() => reset()}
-                className="px-6 py-3 bg-[#E07A5F] text-white rounded-xl hover:bg-[#D0694E] transition-colors"
+                className="px-6 py-3 text-white transition-opacity hover:opacity-90"
+                style={{ backgroundColor: '#F07A22' }}
             >
                 Try again
             </button>

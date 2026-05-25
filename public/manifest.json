@@ -1,0 +1,16 @@
+{
+  "name": "Pen Library Services",
+  "short_name": "PenLibrary",
+  "description": "Rekindling the reading culture.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFFDF8",
+  "theme_color": "#E07A5F",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "any",
+      "type": "image/png"
+    }
+  ]
+}
