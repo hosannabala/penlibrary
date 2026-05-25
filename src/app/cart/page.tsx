@@ -19,7 +19,7 @@ export default function CartPage() {
       <div className="py-24 text-center">
         <div className="text-6xl mb-6">🛒</div>
         <h2 className="text-2xl font-bold mb-3 text-charcoal">Your cart is empty</h2>
-        <p className="text-charcoal/60 mb-8">Looks like you haven't added any books yet.</p>
+        <p className="text-charcoal/60 mb-8">Looks like you haven&apos;t added any books yet.</p>
         <Link
           href="/catalog"
           className="px-8 py-3 bg-terracotta text-white font-bold uppercase tracking-wide hover:bg-terracotta/90 transition-colors"

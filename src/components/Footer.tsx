@@ -31,7 +31,7 @@ export default function Footer({ settings }: { settings: SiteSettings }) {
             <div className="flex items-center gap-2 mb-3">
               <Image src="/logo.png" alt="Pen Library Services" width={110} height={42} className="object-contain brightness-0 invert opacity-90" />
             </div>
-            <p className="italic text-white/50 text-sm mb-3">"Knowledge Covers the Earth"</p>
+            <p className="italic text-white/50 text-sm mb-3">&quot;Knowledge Covers the Earth&quot;</p>
             <p className="text-white/50 text-xs leading-relaxed mb-4">
               {settings.address}
             </p>

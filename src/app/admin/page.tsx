@@ -1624,7 +1624,7 @@ export default function AdminPage() {
                     placeholder="https://chat.whatsapp.com/..."
                     className="w-full p-3 border border-beige focus:outline-none focus:border-charcoal/40 text-sm"
                   />
-                  <p className="text-xs text-charcoal/40 mt-1">The "Join WhatsApp" button on the Book Club page.</p>
+                  <p className="text-xs text-charcoal/40 mt-1">The &quot;Join WhatsApp&quot; button on the Book Club page.</p>
                 </div>
 
                 <div>
