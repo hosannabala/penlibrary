@@ -1,9 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
 
-export const supabase = createClient(url, anon)
+// Guard allows Next.js to import this module during build without throwing.
+// Actual requests will fail at runtime if env vars are missing.
+export const supabase = url && anon
+  ? createClient(url, anon)
+  : createClient('https://placeholder.supabase.co', 'placeholder-anon-key')
 
 // Server-side client — requires service role key; never falls back to anon
 export function createServerClient() {
